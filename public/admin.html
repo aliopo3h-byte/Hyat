@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#2563eb">
+<link rel="icon" href="/icon-192.png">
+<title>لوحة الإدارة</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<div id="login" class="login-wrap hidden">
+  <div class="login-card">
+    <div class="logo"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+    <h1>لوحة الإدارة</h1>
+    <p>دخول الأدمن فقط</p>
+    <div class="field"><label>كلمة سر الأدمن</label><input id="pw" type="password" autocomplete="current-password" dir="ltr" style="text-align:right" onkeydown="if(event.key==='Enter')login()"></div>
+    <div class="err" id="lerr"></div>
+    <button class="btn block" onclick="login()">دخول</button>
+  </div>
+</div>
+
+<div id="app" class="hidden">
+  <div class="top">
+    <div class="top-row">
+      <h1><span class="logo"><svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="3"/><circle cx="12" cy="12" r="3"/></svg></span>لوحة الإدارة</h1>
+      <div style="display:flex;gap:8px">
+        <button class="icon-btn dark" onclick="loadAll(true)" id="refBtn" aria-label="تحديث"></button>
+        <button class="icon-btn dark" onclick="logout()" id="outBtn" aria-label="خروج"></button>
+      </div>
+    </div>
+    <div class="nav" id="nav"></div>
+  </div>
+  <div class="page" id="view"></div>
+</div>
+
+<div class="sheet-bg" id="bg" onclick="if(event.target===this)closeSheet()"><div class="sheet" id="sheet"></div></div>
+<div class="toast" id="toast"></div>
+<script src="/admin.js"></script>
+</body>
+</html>
