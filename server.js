@@ -42,7 +42,10 @@ try {
   console.error('تعذّرت قراءة ملف البيانات:', e.message);
   try { fs.copyFileSync(DB_FILE, DB_FILE + '.corrupt-' + Date.now()); } catch {}
 }
+db.nextId = Math.max(Number(db.nextId) || 0, 0, ...db.subs.map(s => s.id || 0));
 db.subs.forEach(s => {
+  s.agentId = s.agentId || '';
+  s.uid = s.uid || ('L' + s.id + '-' + db.batchId);
   s.amount = toNum(s.amount);
   s.paidAmount = Number(s.paidAmount) || 0;
   s.region = s.region || '';
@@ -131,10 +134,14 @@ const subInfo = s =>
   `\nاليوزر: ${s.user}\nنوع الاشتراك: ${s.plan}`;
 
 // ============ المشتركون والصلاحيات ============
-const visible = (u, s) => u.role === 'admin' || !u.regions.length || u.regions.map(normR).includes(normR(s.region));
+const visible = (u, s) => {
+  if (u.role === 'admin') return true;
+  if (s.agentId) return s.agentId === u.id;
+  return !u.regions.length || u.regions.map(normR).includes(normR(s.region)); // قوائم قديمة بلا مندوب
+};
 const pub = s => ({
   id: s.id, name: s.name, address: s.address, phone: s.phone, user: s.user, plan: s.plan, notes: s.notes,
-  region: s.region, amount: s.amount, paidAmount: s.paidAmount, status: s.status, reason: s.reason, by: s.by, at: s.at
+  region: s.region, agentId: s.agentId, amount: s.amount, paidAmount: s.paidAmount, status: s.status, reason: s.reason, by: s.by, at: s.at
 });
 function payload(user) {
   const day = dayOf(Date.now());
@@ -180,7 +187,7 @@ function applyOp(user, op) {
     s.status = (due <= 0 || s.paidAmount >= due) ? 'paid' : 'partial';
     if (s.status === 'paid') s.reason = '';
     Object.assign(s, { by: user.name, byId: user.id, at: timeStr(ts) });
-    db.ledger.push({ id: op.opId, batchId: db.batchId, subId: s.id, subName: s.name, region: s.region, amount: amt,
+    db.ledger.push({ id: op.opId, batchId: db.batchId, subId: s.id, subUid: s.uid, subName: s.name, region: s.region, amount: amt,
       byId: user.id, byName: user.name, ts, day: dayOf(ts), void: false });
     const rem = due > 0 ? Math.max(0, due - s.paidAmount) : 0;
     const head = s.status === 'paid' ? '✅ تم الدفع' : '🟡 دفعة جزئية';
@@ -256,7 +263,7 @@ app.post('/api/sync', auth(['admin', 'agent']), (req, res) => {
 app.post('/api/subs/:id/reset', auth(['admin']), (req, res) => {
   const s = db.subs.find(x => x.id === Number(req.params.id));
   if (!s) return res.status(404).json({ error: 'غير موجود' });
-  const voided = db.ledger.filter(l => !l.void && l.batchId === db.batchId && l.subId === s.id);
+  const voided = db.ledger.filter(l => !l.void && (l.subUid || ('L' + l.subId + '-' + l.batchId)) === s.uid);
   const total = voided.reduce((a, l) => a + l.amount, 0);
   voided.forEach(l => { l.void = true; });
   Object.assign(s, { status: 'pending', paidAmount: 0, reason: '', by: '', byId: '', at: '' });
@@ -284,27 +291,55 @@ const pick = (row, names) => {
 
 app.post('/api/upload', auth(['admin']), upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'لم يتم اختيار ملف' });
+  const body = req.body || {};
+  const agent = db.users.find(u => u.id === body.agentId);
+  if (!agent) return res.status(400).json({ error: 'اختر المندوب الذي ستُرفع القائمة له' });
+  const append = body.mode === 'append';
   try {
     const wb = XLSX.read(req.file.buffer, { type: 'buffer' });
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '', raw: false });
-    const subs = [];
+    const fresh = [];
     rows.forEach(r => {
       const s = {};
       for (const f in HEADERS) s[f] = pick(r, HEADERS[f]);
       if (!s.name) return;
       s.amount = toNum(s.amount);
-      subs.push({ id: subs.length + 1, ...s, status: 'pending', paidAmount: 0, reason: '', by: '', byId: '', at: '' });
+      const id = ++db.nextId;
+      fresh.push({ id, uid: 'S' + id, agentId: agent.id, ...s, status: 'pending', paidAmount: 0, reason: '', by: '', byId: '', at: '' });
     });
-    if (!subs.length) return res.status(400).json({ error: 'لم أجد أسماء. تأكد أن أحد الأعمدة عنوانه "الاسم"' });
+    if (!fresh.length) return res.status(400).json({ error: 'لم أجد أسماء. تأكد أن أحد الأعمدة عنوانه "الاسم"' });
+    let removed = 0;
+    if (!append) {
+      const keep = db.subs.filter(s => s.agentId !== agent.id);
+      removed = db.subs.length - keep.length;
+      db.subs = keep;
+    }
+    db.subs.push(...fresh);
     db.batchId = Date.now();
     db.uploadedAt = timeStr(Date.now());
-    db.subs = subs;
     save();
-    const regions = [...new Set(subs.map(s => s.region).filter(Boolean))];
-    res.json({ count: subs.length, regions: regions.length });
+    res.json({ count: fresh.length, agent: agent.name, removed });
   } catch (e) {
     res.status(400).json({ error: 'تعذّرت قراءة الملف. تأكد أنه Excel (.xlsx)' });
   }
+});
+
+app.post('/api/subs/clear', auth(['admin']), (req, res) => {
+  const target = (req.body || {}).agentId || 'all';
+  let label, keep;
+  if (target === 'all') { label = 'كل المندوبين'; keep = []; }
+  else if (target === 'unassigned') { label = 'المشتركين بلا مندوب'; keep = db.subs.filter(s => s.agentId); }
+  else {
+    const u = db.users.find(x => x.id === target);
+    if (!u) return res.status(404).json({ error: 'المندوب غير موجود' });
+    label = 'قائمة ' + u.name; keep = db.subs.filter(s => s.agentId !== target);
+  }
+  const removed = db.subs.length - keep.length;
+  db.subs = keep;
+  if (!db.subs.length) db.uploadedAt = null;
+  save();
+  sendTg(`🧹 تم تصفير القائمة من الأدمن\nالنطاق: ${label}\nعدد المحذوفين: ${removed}`);
+  res.json({ removed });
 });
 
 // ============ التقارير ============
@@ -409,14 +444,15 @@ app.get('/api/stats', auth(['admin']), (req, res) => {
   const agents = db.users.map(u => {
     const d = agentDay(day).find(x => x.id === u.id) || { count: 0, collected: 0 };
     return { id: u.id, name: u.name, active: u.active, count: d.count, collected: d.collected,
-      unpaid: db.subs.filter(s => s.byId === u.id && s.status === 'unpaid').length };
+      unpaid: db.subs.filter(s => s.byId === u.id && s.status === 'unpaid').length,
+      subs: db.subs.filter(s => s.agentId === u.id).length };
   });
-  agentDay(day).filter(x => !db.users.find(u => u.id === x.id)).forEach(x => agents.push({ ...x, active: false, unpaid: 0 }));
+  agentDay(day).filter(x => !db.users.find(u => u.id === x.id)).forEach(x => agents.push({ ...x, active: false, unpaid: 0, subs: 0 }));
   const payments = db.ledger.filter(l => !l.void && l.day === day).sort((a, b) => b.ts - a.ts).slice(0, 200)
     .map(l => ({ time: timeStr(l.ts), agent: l.byName, sub: l.subName, region: l.region, amount: l.amount }));
   const collectedDay = agentDay(day).reduce((a, x) => a + x.collected, 0);
   res.json({
-    day, uploadedAt: db.uploadedAt, total: db.subs.length, by, due: r2(due), paidTotal: r2(paidTotal), leftAmt: r2(leftAmt),
+    day, uploadedAt: db.uploadedAt, total: db.subs.length, unassigned: db.subs.filter(s => !s.agentId).length, by, due: r2(due), paidTotal: r2(paidTotal), leftAmt: r2(leftAmt),
     collectedDay: r2(collectedDay), countDay: agentDay(day).reduce((a, x) => a + x.count, 0), agents, payments,
     regions: [...new Set(db.subs.map(s => s.region).filter(Boolean))], tg: tgStats,
     tgConfigured: !!(BOT_TOKEN && CHAT_ID), currency: CURRENCY
